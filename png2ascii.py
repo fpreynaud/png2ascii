@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 from collections import namedtuple
+from copy import deepcopy
 from time import sleep
 
 import argparse
@@ -32,6 +33,7 @@ class PNG:
 		self._plte = None
 		self.chunks = []
 		self.pixel_map = []
+		self.original_pixel_map = []
 
 		with open(path, "rb") as image: 
 			signature = image.read(8)
@@ -77,6 +79,8 @@ class PNG:
 
 		self.width = self.ihdr.width
 		self.height = self.ihdr.height
+		self.original_width = self.width
+		self.original_height = self.height
 		self.depth = self.ihdr.depth
 		self.colortype = colortype_lookup[self.ihdr.colortype]
 		self.filter_method = self.ihdr.filter_method
@@ -98,8 +102,8 @@ class PNG:
 		height = min(self.height - orig_y, max_height)
 		width  = min(self.width - orig_x, max_width)
 		#print(f"{height=}, {width=}, {orig_y=}, {orig_x=}")
-		for y in range(orig_y, len(self.pixel_map), 2):
-			for x in range(orig_x, len(self.pixel_map[y])):
+		for y in range(0, len(self.pixel_map), 2):
+			for x in range(0, len(self.pixel_map[y])):
 				px = self.pixel_map[y][x]
 				r, g, b = px.rgb
 				if y == len(self.pixel_map) - 1:
@@ -119,7 +123,7 @@ class PNG:
 		scanline = []
 		filter_type = raw_line[0]
 		x = 0
-		for i in range(1, min(origx + width, self.width)*self.bytes_per_pixel + 1, self.bytes_per_pixel):
+		for i in range(1, self.width*self.bytes_per_pixel + 1, self.bytes_per_pixel):
 			pixel = Pixel(filter_type, raw_line[i:i+self.bytes_per_pixel], x=x, y=y)
 			scanline.append(pixel)
 			x += 1
@@ -131,11 +135,146 @@ class PNG:
 			height = self.height
 		if not width:
 			width = self.width
-		for y in range(min(origy + height, self.height)):
+		for y in range(self.height):
 			raw_line = self.get_line(y + 1)
 			scanline = self.parse_rawline(y, raw_line, width, origy, origx)
 			scanlines.append(scanline)
-		self.pixel_map = [*scanlines]
+		self.original_pixel_map = [*scanlines]
+		self.pixel_map = deepcopy(self.original_pixel_map)
+	
+	def nearest_neighbour(self, height, width):
+		pixel_map = []
+		for y in range(height):
+			row = []
+			y_src = int(y * self.height / height)
+			for x in range(width):
+				x_src = int(x * self.width / width)
+				px_src = self.pixel_map[y_src][x_src]
+				px_dst = px_src.copy()
+				px_dst.x = x
+				px_dst.y = y
+				px_dst.unfiltered = True
+				row.append(px_dst)
+			pixel_map.append(row)
+		self.height = height
+		self.width = width
+		del self.pixel_map
+		self.pixel_map = pixel_map
+	
+	def bicubic(self, height, width):
+		pixel_map = []
+		def cubic_weight(t, a=-0.5):
+			T = abs(t)
+			if T <= 1:
+				return (a + 2)*T**3 - (a + 3)*T**2 + 1
+			elif T < 2:
+				return a*T**3 - 5*a*T**2 + 8*a*T - 4*a 
+			return 0
+
+		for y in range(height):
+			y_src = y * self.height / height
+			dy = y_src - int(y_src)
+			row = []
+			for x in range(width):
+				x_src = x * self.width / width
+				x0, y0 = (int(x_src), int(y_src))
+				y_top = max(0, y0 - 1)
+				x_left = max(0, x0 - 1)
+				x_right = min(x0 + 1, self.width - 1)
+				x_right2 = min(x0 + 2, self.width - 1)
+				y_bottom = min(y0 + 1, self.height - 1)
+				y_bottom2 = min(y0 + 2, self.height - 1)
+				neighbours = [[(x_left, y_top)    , (x0, y_top)    , (x_right, y_top)    , (x_right2, y_top)],
+				              [(x_left, y0)       , (x0, y0)       , (x_right, y0)       , (x_right2, y0)],
+				              [(x_left, y_bottom) , (x0, y_bottom) , (x_right, y_bottom) , (x_right2, y_bottom)],
+				              [(x_left, y_bottom2), (x0, y_bottom2), (x_right, y_bottom2), (x_right2, y_bottom2)]]
+
+				dx = x_src - int(x_src)
+				Rs = []
+				# Horizontal pass
+				for line in neighbours:
+					R_red = 0
+					R_green = 0
+					R_blue = 0
+					for i in range(-1, 3):
+						xi, yi = line[i+1]
+						R_red += cubic_weight(i - dx)*self.original_pixel_map[yi][xi].red
+						R_green += cubic_weight(i - dx)*self.original_pixel_map[yi][xi].green
+						R_blue += cubic_weight(i - dx)*self.original_pixel_map[yi][xi].blue
+					Rs.append((R_red, R_green, R_blue))
+
+				# Vertical pass
+				r = 0
+				g = 0
+				b = 0
+				for i in range(-1, 3):
+					r += cubic_weight(i - dy)*Rs[i+1][0]
+					g += cubic_weight(i - dy)*Rs[i+1][1]
+					b += cubic_weight(i - dy)*Rs[i+1][2]
+				r = max(0, min(int(r), 255))
+				g = max(0, min(int(g), 255))
+				b = max(0, min(int(b), 255))
+				px = Pixel(0, bytes([r, g, b]), x, y)
+				px.unfiltered = True
+				row.append(px)
+			pixel_map.append(row)
+
+		del self.pixel_map
+		self.pixel_map = pixel_map
+
+	def bilinear(self, height, width):
+		pixel_map = []
+
+		for y in range(height):
+			y_src = y * self.height / height
+			row = []
+			for x in range(width):
+				x_src = x * self.width / width
+				(x0, y0) = (int(x_src), int(y_src))
+				(x1, y1) = (x0 + 1, y0 + 1)
+				dx = x_src - x0
+				dy = y_src - y0
+				weight_ul = (1 - dx)*(1 - dy)
+				weight_ur = dx*(1 - dy)
+				weight_bl = (1 - dx)*dy
+				weight_br = dx*dy
+				
+				y1 = min(y1, len(self.original_pixel_map) - 1)
+				x1 = min(x1, len(self.original_pixel_map[y1]) - 1)
+				ul = self.original_pixel_map[y0][x0]
+				ur = self.original_pixel_map[y0][x1]
+				bl = self.original_pixel_map[y1][x0]
+				br = self.original_pixel_map[y1][x1]
+				r = int(weight_ul*ul.red + weight_ur*ur.red + weight_bl*bl.red + weight_br*br.red)
+				g = int(weight_ul*ul.green + weight_ur*ur.green + weight_bl*bl.green + weight_br*br.green)
+				b = int(weight_ul*ul.blue + weight_ur*ur.blue + weight_bl*bl.blue + weight_br*br.blue)
+
+				px_dst = Pixel(0, bytes([r, g, b]), x, y)
+				px_dst.unfiltered = True
+				row.append(px_dst)
+			pixel_map.append(row)
+
+				
+		del self.pixel_map
+		self.pixel_map = pixel_map
+
+	def resize(self, height, width, method="nearest"):
+		"""
+		Resize to width x height using one of the following methods:
+		- "nearest": for nearest neighbour interpolation
+		- "bilinear": for bilinear interpolation
+		- "bicubic": for bicubic interpolation
+		"""
+		if (height, width) == (self.height, self.width):
+			return
+
+		if method == "nearest":
+			self.nearest_neighbour(height, width)
+		elif method == "bilinear":
+			self.bilinear(height, width)
+		elif method == "bicubic":
+			self.bicubic(height, width)
+
 	
 	def uncompress_data(self):
 		pixels = b""
@@ -296,14 +435,33 @@ class Pixel:
 	
 	def __repr__(self):
 		return f"\x1b[48;2;{self.red};{self.green};{self.blue}m \x1b[m"
+	
+	def copy(self):
+		px = Pixel(self.filter_type, self.raw, self.x, self.y)
+		for att in ("red", "green", "blue", "alpha", "unfiltered", "x", "y"):
+			setattr(px, att, getattr(self, att))
+		return px
 
 	@property
 	def rgb(self):
 		return (self.red, self.green, self.blue)
+	
+	@rgb.setter
+	def rgb(self, value):
+		r, g, b = value
+		self.red = r
+		self.green = g
+		self.blue = b
 
 	@property
 	def rgba(self):
 		return (self.red, self.green, self.blue, self.alpha)
+	
+	@rgba.setter
+	def rgba(self, value):
+		r, g, b, a = value
+		self.rgb = (r, g, b)
+		self.alpha = a
 
 def b2i(seq: bytes):
 	"""
@@ -328,8 +486,10 @@ def fmt_num(n, thousand_sep=" ", decimal_sep="."):
 parser = argparse.ArgumentParser()
 parser.add_argument("-x", "--origx", help="Origin abcissa", default=0, type=int)
 parser.add_argument("-y", "--origy", help="Origin ordinate", default=0, type=int)
-parser.add_argument("-w", "--max-width", help="Maximum width to display", type=int)
-parser.add_argument("-H", "--max-height", help="Maximum height to display", type=int)
+parser.add_argument("-r", "--resize-mode", choices=["bilinear", "nearest", "bicubic"], default="nearest")
+parser.add_argument("-w", "--max-width", help="Resize to this width", type=int)
+parser.add_argument("-H", "--max-height", help="Resize to this height", type=int)
+parser.add_argument("-k", "--keep-ratio", help="Keep width/height ration when resizing ignored if both --max-width and --max-height are given", action="store_true")
 parser.add_argument("path", help="Path to the image")
 args = parser.parse_args()
 
@@ -341,10 +501,28 @@ if not os.path.isfile(path):
 image = PNG(path)
 #print(image)
 w, h = shutil.get_terminal_size()
-print("parsing image data", file=sys.stderr)
+print("Parsing image data", file=sys.stderr)
 image.parse_raw(args.max_height, args.max_width, args.origy, args.origx)
-print("unfiltering", file=sys.stderr)
+print("Unfiltering", file=sys.stderr)
 image.unfilter()
+image.original_pixel_map = deepcopy(image.pixel_map)
+
+ratio = image.width / image.height
+
+width, height = image.width, image.height
+if args.max_height and args.max_width:
+	width, height = args.max_width, args.max_height
+elif args.max_height and not args.max_width:
+	height = args.max_height
+	if args.keep_ratio:
+		width = max(1, int(ratio * args.max_height))
+		width = min(w, width)
+elif not args.max_height and args.max_width:
+	width = args.max_width
+	if args.keep_ratio:
+		height = max(1, int(args.max_width // ratio))
+print("Resizing", file=sys.stderr)
+image.resize(height, width, args.resize_mode)
+print("Displaying", file=sys.stderr)
+image.display()
 #print(f"{args=}")
-print("starting display", file=sys.stderr)
-image.display(args.origy, args.origx, args.max_height, args.max_width)
