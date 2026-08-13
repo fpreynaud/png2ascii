@@ -2,6 +2,8 @@
 
 from collections import namedtuple
 from time import sleep
+
+import argparse
 import os
 import shutil
 import sys
@@ -84,13 +86,23 @@ class PNG:
 	def __repr__(self):
 		return f"PNG {self.width}x{self.height} depth: {self.depth} colortype: {self.colortype} filter method: {self.filter_method} - data size: {fmt_num(self.compressed_size, chr(0x27))} bytes"
 
-	def display(self):
-		for y in range(0, self.height, 2):
-			#sys.stdout.write(f"{self.pixel_map[y][0].filter_type},{self.pixel_map[min(y+1, self.height - 1)][0].filter_type}")
-			for x in range(self.width):
+	def display(self, orig_y=0, orig_x=0, max_height=None, max_width=None):
+		w, h = shutil.get_terminal_size()
+		if max_height is None:
+			max_height = self.height
+		if max_width is None:
+			max_width = w
+
+		orig_y = min(self.height - 1, orig_y)
+		orig_x = min(self.width - 1, orig_x)
+		height = min(self.height - orig_y, max_height)
+		width  = min(self.width - orig_x, max_width)
+		#print(f"{height=}, {width=}, {orig_y=}, {orig_x=}")
+		for y in range(orig_y, len(self.pixel_map), 2):
+			for x in range(orig_x, len(self.pixel_map[y])):
 				px = self.pixel_map[y][x]
 				r, g, b = px.rgb
-				if y == self.height - 1:
+				if y == len(self.pixel_map) - 1:
 					sys.stdout.write(f"\x1b[m\x1b[38;2;{r};{g};{b}m{HB}\x1b[m")
 				else:
 					r2, g2, b2 = self.pixel_map[y+1][x].rgb
@@ -103,24 +115,27 @@ class PNG:
 		end = start + self.width*self.bytes_per_pixel + 1
 		return self.raw[start:end]
 		
-	def parse_rawline(self, y: int, raw_line: bytes):
+	def parse_rawline(self, y: int, raw_line: bytes, width: int, origy=0, origx=0):
 		scanline = []
 		filter_type = raw_line[0]
 		x = 0
-		for i in range(1, self.width*self.bytes_per_pixel + 1, self.bytes_per_pixel):
+		for i in range(1, min(origx + width, self.width)*self.bytes_per_pixel + 1, self.bytes_per_pixel):
 			pixel = Pixel(filter_type, raw_line[i:i+self.bytes_per_pixel], x=x, y=y)
 			scanline.append(pixel)
 			x += 1
 		return scanline
 		
-	def parse_raw(self):
+	def parse_raw(self, height=None, width=None, origy=0, origx=0):
 		scanlines = []
-		for y in range(self.height):
+		if not height:
+			height = self.height
+		if not width:
+			width = self.width
+		for y in range(min(origy + height, self.height)):
 			raw_line = self.get_line(y + 1)
-			scanline = self.parse_rawline(y, raw_line)
+			scanline = self.parse_rawline(y, raw_line, width, origy, origx)
 			scanlines.append(scanline)
 		self.pixel_map = [*scanlines]
-	
 	
 	def uncompress_data(self):
 		pixels = b""
@@ -129,9 +144,8 @@ class PNG:
 		return zlib.decompress(pixels)
 	
 	def unfilter(self):
-		for y in range(self.height):
-			#print(self.pixel_map[y][0].filter_type)
-			for x in range(self.width):
+		for y in range(min(self.height, len(self.pixel_map))):
+			for x in range(min(self.width, len(self.pixel_map[y]))):
 				px = self.pixel_map[y][x]
 				if px.unfiltered:
 					continue
@@ -282,7 +296,6 @@ class Pixel:
 	
 	def __repr__(self):
 		return f"\x1b[48;2;{self.red};{self.green};{self.blue}m \x1b[m"
-		#return "Px(" + "".join(f"{attr}={getattr(self, attr)}, " for attr in ("filter_type", "x", "y", "red", "green", "blue")) + ")"
 
 	@property
 	def rgb(self):
@@ -312,10 +325,15 @@ def fmt_num(n, thousand_sep=" ", decimal_sep="."):
 		l.insert(0, int_part[max(0, i-3):i])
 	return thousand_sep.join(l) + dec_part
 
-if len(sys.argv) < 2:
-	exit(1)
+parser = argparse.ArgumentParser()
+parser.add_argument("-x", "--origx", help="Origin abcissa", default=0, type=int)
+parser.add_argument("-y", "--origy", help="Origin ordinate", default=0, type=int)
+parser.add_argument("-w", "--max-width", help="Maximum width to display", type=int)
+parser.add_argument("-H", "--max-height", help="Maximum height to display", type=int)
+parser.add_argument("path", help="Path to the image")
+args = parser.parse_args()
 
-path = sys.argv[1]
+path = args.path
 
 if not os.path.isfile(path):
 	exit(1)
@@ -323,6 +341,10 @@ if not os.path.isfile(path):
 image = PNG(path)
 #print(image)
 w, h = shutil.get_terminal_size()
-image.parse_raw()
+print("parsing image data", file=sys.stderr)
+image.parse_raw(args.max_height, args.max_width, args.origy, args.origx)
+print("unfiltering", file=sys.stderr)
 image.unfilter()
-image.display()
+#print(f"{args=}")
+print("starting display", file=sys.stderr)
+image.display(args.origy, args.origx, args.max_height, args.max_width)
