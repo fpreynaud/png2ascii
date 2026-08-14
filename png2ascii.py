@@ -287,8 +287,8 @@ class PNG:
 			for x in range(min(self.width, len(self.pixel_map[y]))):
 				px = self.pixel_map[y][x]
 				if px.unfiltered:
-					continue
-				if px.filter_type == 1:
+					pass
+				elif px.filter_type == 1:
 					self.pixel_map[y][x] = self.un_sub(px)
 				elif px.filter_type == 2:
 					self.pixel_map[y][x] = self.un_up(px)
@@ -296,6 +296,10 @@ class PNG:
 					self.pixel_map[y][x] = self.un_avg(px)
 				else:
 					self.pixel_map[y][x] = self.un_paeth(px)
+
+				px.red = int((1 - px.alpha/255) * 0 + (px.alpha/255) * px.red)
+				px.green = int((1 - px.alpha/255) * 0 + (px.alpha/255) * px.green)
+				px.blue = int((1 - px.alpha/255) * 0 + (px.alpha/255) * px.blue)
 					
 	def un_paeth(self, px):
 		if px.x == 0:
@@ -346,6 +350,18 @@ class PNG:
 		else:
 			px.blue = (px.blue + upleft.blue) % 256
 
+		pa = left.alpha + up.alpha - upleft.alpha
+		pa_left = abs(pa - left.alpha)
+		pa_up = abs(pa - up.alpha)
+		pa_upleft = abs(pa - upleft.alpha)
+
+		if pa_left <= pa_up and pa_left <= pa_upleft:
+			px.alpha = (px.alpha + left.alpha) % 256
+		elif pa_up <= pa_upleft:
+			px.alpha = (px.alpha + up.alpha) % 256
+		else:
+			px.alpha = (px.alpha + upleft.alpha) % 256
+
 		px.unfiltered = True
 
 		return px
@@ -370,10 +386,7 @@ class PNG:
 		px.blue = px.blue % 256
 		px.alpha = px.alpha % 256
 
-		px.raw = bytes([px.red, px.green, px.blue]) 
-		# only add alpha to px.raw if it originally had an alpha byte
-		if len(px.raw) == 4:
-			px.raw += bytes([px.alpha])
+		px.raw = bytes([px.red, px.green, px.blue, px.alpha]) 
 		px.unfiltered = True
 		return px
 
@@ -391,10 +404,7 @@ class PNG:
 		px.blue = px.blue % 256
 		px.alpha = px.alpha % 256
 
-		px.raw = bytes([px.red, px.green, px.blue]) 
-		# only add alpha to px.raw if it originally had an alpha byte
-		if len(px.raw) == 4:
-			px.raw += bytes([px.alpha])
+		px.raw = bytes([px.red, px.green, px.blue, px.alpha]) 
 		px.unfiltered = True
 		return px
 	
@@ -412,10 +422,7 @@ class PNG:
 		px.blue = px.blue % 256
 		px.alpha = px.alpha % 256
 
-		px.raw = bytes([px.red, px.green, px.blue]) 
-		# only add alpha to px.raw if it originally had an alpha byte
-		if len(px.raw) == 4:
-			px.raw += bytes([px.alpha])
+		px.raw = bytes([px.red, px.green, px.blue, px.alpha]) 
 		px.unfiltered = True
 		return px
 
@@ -429,7 +436,7 @@ class Pixel:
 		self.red = b2i(self.raw[0])
 		self.green = b2i(self.raw[1])
 		self.blue = b2i(self.raw[2])
-		self.alpha = b2i(b"\x00")
+		self.alpha = b2i(b"\xff")
 		if len(self.raw) == 4:
 			self.alpha = b2i(self.raw[3])
 		self.unfiltered = not bool(filter_type)
