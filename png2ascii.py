@@ -497,9 +497,17 @@ args = parser.parse_args()
 
 path = args.path
 
-if not os.path.isfile(path):
+if not os.path.isfile(path) and path != "-":
 	exit(1)
 	
+tmp_img = "/tmp/.img.png"
+if path == "-":
+	print("Reading image from standard input", file=sys.stderr)
+	raw_image = sys.stdin.buffer.read()
+	with open(tmp_img, "wb") as f:
+		f.write(raw_image)
+	path = tmp_img
+
 image = PNG(path)
 
 if args.info:
@@ -531,4 +539,6 @@ print("Resizing", file=sys.stderr)
 image.resize(height, width, args.resize_mode)
 print("Displaying", file=sys.stderr)
 image.display()
-#print(f"{args=}")
+
+if os.path.isfile(tmp_img):
+	os.remove("/tmp/.img.png")
