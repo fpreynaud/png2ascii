@@ -360,6 +360,7 @@ class PNG:
 			up = Pixel(0, b"\x00"*self.bytes_per_pixel, px.x, 0)
 		else:
 			up = self.pixel_map[px.y - 1][px.x]
+
 		px.red += avg(left.red, up.red)
 		px.green += avg(left.green, up.green)
 		px.blue += avg(left.blue, up.blue)
@@ -486,6 +487,7 @@ def fmt_num(n, thousand_sep=" ", decimal_sep="."):
 parser = argparse.ArgumentParser()
 parser.add_argument("-x", "--origx", help="Origin abcissa", default=0, type=int)
 parser.add_argument("-y", "--origy", help="Origin ordinate", default=0, type=int)
+parser.add_argument("-i", "--info", help="Display information about image", action="store_true")
 parser.add_argument("-r", "--resize-mode", choices=["bilinear", "nearest", "bicubic"], default="nearest")
 parser.add_argument("-w", "--max-width", help="Resize to this width", type=int)
 parser.add_argument("-H", "--max-height", help="Resize to this height", type=int)
@@ -499,7 +501,11 @@ if not os.path.isfile(path):
 	exit(1)
 	
 image = PNG(path)
-#print(image)
+
+if args.info:
+	print(image)
+	exit(0)
+
 w, h = shutil.get_terminal_size()
 print("Parsing image data", file=sys.stderr)
 image.parse_raw(args.max_height, args.max_width, args.origy, args.origx)
