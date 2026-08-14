@@ -287,19 +287,34 @@ class PNG:
 			for x in range(min(self.width, len(self.pixel_map[y]))):
 				px = self.pixel_map[y][x]
 				if px.unfiltered:
+					called = ""
 					pass
 				elif px.filter_type == 1:
 					self.pixel_map[y][x] = self.un_sub(px)
+					called = "un_sub"
 				elif px.filter_type == 2:
 					self.pixel_map[y][x] = self.un_up(px)
+					called = "un_up"
 				elif px.filter_type == 3:
 					self.pixel_map[y][x] = self.un_avg(px)
+					called = "un_avg"
 				else:
 					self.pixel_map[y][x] = self.un_paeth(px)
+					called = "un_paeth"
 
-				px.red = int((1 - px.alpha/255) * 0 + (px.alpha/255) * px.red)
-				px.green = int((1 - px.alpha/255) * 0 + (px.alpha/255) * px.green)
-				px.blue = int((1 - px.alpha/255) * 0 + (px.alpha/255) * px.blue)
+				if self.pixel_map[y][x].alpha != 255 and self.pixel_map[y][x].alpha != 0:
+					print(y, x, self.pixel_map[y][x].rgba, called)
+
+				if not args.ignore_alpha:
+					#print(px.rgba)
+					bg_r, bg_g, bg_b = args.background.split(",")
+					bg_r = int(bg_r)
+					bg_g = int(bg_g)
+					bg_b = int(bg_b)
+					px.red   = int((1 - px.alpha/255) * bg_r + (px.alpha/255) * px.red)
+					px.green = int((1 - px.alpha/255) * bg_g + (px.alpha/255) * px.green)
+					px.blue  = int((1 - px.alpha/255) * bg_b + (px.alpha/255) * px.blue)
+					#print(px.rgba)
 					
 	def un_paeth(self, px):
 		if px.x == 0:
@@ -349,6 +364,12 @@ class PNG:
 			px.blue = (px.blue + up.blue) % 256
 		else:
 			px.blue = (px.blue + upleft.blue) % 256
+		
+		px.raw = bytes([px.red, px.green, px.blue]) 
+
+		if self.bytes_per_pixel <= 3:
+			px.unfiltered = True
+			return px
 
 		pa = left.alpha + up.alpha - upleft.alpha
 		pa_left = abs(pa - left.alpha)
@@ -361,9 +382,9 @@ class PNG:
 			px.alpha = (px.alpha + up.alpha) % 256
 		else:
 			px.alpha = (px.alpha + upleft.alpha) % 256
+		px.raw += bytes([px.alpha])
 
 		px.unfiltered = True
-
 		return px
 
 	def un_avg(self, px):
@@ -378,15 +399,23 @@ class PNG:
 			up = self.pixel_map[px.y - 1][px.x]
 
 		px.red += avg(left.red, up.red)
-		px.green += avg(left.green, up.green)
-		px.blue += avg(left.blue, up.blue)
-		px.alpha += avg(left.alpha, up.alpha)
 		px.red = px.red % 256
-		px.green = px.green % 256
-		px.blue = px.blue % 256
-		px.alpha = px.alpha % 256
 
-		px.raw = bytes([px.red, px.green, px.blue, px.alpha]) 
+		px.green += avg(left.green, up.green)
+		px.green = px.green % 256
+
+		px.blue += avg(left.blue, up.blue)
+		px.blue = px.blue % 256
+
+		px.raw = bytes([px.red, px.green, px.blue]) 
+
+		if self.bytes_per_pixel <= 3:
+			px.unfiltered = True
+			return px
+
+		px.alpha += avg(left.alpha, up.alpha)
+		px.alpha = px.alpha % 256
+		px.raw += bytes([px.alpha])
 		px.unfiltered = True
 		return px
 
@@ -396,15 +425,23 @@ class PNG:
 		else:
 			left = self.pixel_map[px.y][px.x - 1]
 		px.red += left.red
-		px.green += left.green
-		px.blue += left.blue
-		px.alpha += left.alpha
 		px.red = px.red % 256
-		px.green = px.green % 256
-		px.blue = px.blue % 256
-		px.alpha = px.alpha % 256
 
-		px.raw = bytes([px.red, px.green, px.blue, px.alpha]) 
+		px.green += left.green
+		px.green = px.green % 256
+
+		px.blue += left.blue
+		px.blue = px.blue % 256
+
+		px.raw = bytes([px.red, px.green, px.blue]) 
+
+		if self.bytes_per_pixel <= 3:
+			px.unfiltered = True
+			return px
+
+		px.alpha += left.alpha
+		px.alpha = px.alpha % 256
+		px.raw += bytes([px.alpha])
 		px.unfiltered = True
 		return px
 	
@@ -414,15 +451,22 @@ class PNG:
 		else:
 			up = self.pixel_map[px.y - 1][px.x]
 		px.red += up.red
-		px.green += up.green
-		px.blue += up.blue
-		px.alpha += up.alpha
 		px.red = px.red % 256
-		px.green = px.green % 256
-		px.blue = px.blue % 256
-		px.alpha = px.alpha % 256
 
-		px.raw = bytes([px.red, px.green, px.blue, px.alpha]) 
+		px.green += up.green
+		px.green = px.green % 256
+
+		px.blue += up.blue
+		px.blue = px.blue % 256
+
+		px.raw = bytes([px.red, px.green, px.blue]) 
+		if self.bytes_per_pixel <= 3:
+			px.unfiltered = True
+			return px
+
+		px.alpha += up.alpha
+		px.alpha = px.alpha % 256
+		px.raw += bytes([px.alpha])
 		px.unfiltered = True
 		return px
 
@@ -494,6 +538,8 @@ def fmt_num(n, thousand_sep=" ", decimal_sep="."):
 parser = argparse.ArgumentParser()
 parser.add_argument("-x", "--origx", help="Origin abcissa", default=0, type=int)
 parser.add_argument("-y", "--origy", help="Origin ordinate", default=0, type=int)
+parser.add_argument("-bg", "--background", help="RGB colors of background, written as R,G,B", default="0,0,0")
+parser.add_argument("-ia", "--ignore-alpha", help="Do not update rgb values according to alpha channel after unfiltering", action="store_true")
 parser.add_argument("-i", "--info", help="Display information about image", action="store_true")
 parser.add_argument("-r", "--resize-mode", choices=["bilinear", "nearest", "bicubic"], default="nearest")
 parser.add_argument("-w", "--max-width", help="Resize to this width", type=int)
