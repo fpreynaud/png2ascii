@@ -64,17 +64,17 @@ class PNG:
 
 		colortype_lookup = {
 			0: "grayscale",
-			2: "truecolor",
+			2: "RGB",
 			3: "indexed",
 			4: "grayscale_alpha",
-			6: "truecolor_alpha"
+			6: "RGBa"
 		}
 		self.channel_count = {
 			"indexed": 1,
 			"grayscale": 1,
 			"grayscale_alpha": 2,
-			"truecolor": 3,
-			"truecolor_alpha": 4
+			"RGB": 3,
+			"RGBa": 4
 		}
 
 		self.width = self.ihdr.width
@@ -101,7 +101,6 @@ class PNG:
 		orig_x = min(self.width - 1, orig_x)
 		height = min(self.height - orig_y, max_height)
 		width  = min(self.width - orig_x, max_width)
-		#print(f"{height=}, {width=}, {orig_y=}, {orig_x=}")
 		for y in range(0, len(self.pixel_map), 2):
 			for x in range(0, len(self.pixel_map[y])):
 				px = self.pixel_map[y][x]
@@ -592,6 +591,7 @@ print("Resizing", file=sys.stderr)
 image.resize(height, width, args.resize_mode)
 print("Displaying", file=sys.stderr)
 image.display()
+print(path)
 
 if os.path.isfile(tmp_img):
 	os.remove("/tmp/.img.png")
