@@ -301,9 +301,12 @@ class PNG:
 					self.pixel_map[y][x] = self.un_paeth(px)
 					called = "un_paeth"
 
-				if self.pixel_map[y][x].alpha != 255 and self.pixel_map[y][x].alpha != 0:
-					print(y, x, self.pixel_map[y][x].rgba, called)
+				#if self.pixel_map[y][x].alpha != 255 and self.pixel_map[y][x].alpha != 0:
+					#print(y, x, self.pixel_map[y][x].rgba, called)
 
+		for y in range(min(self.height, len(self.pixel_map))):
+			for x in range(min(self.width, len(self.pixel_map[y]))):
+				px = self.pixel_map[y][x]
 				if not args.ignore_alpha:
 					#print(px.rgba)
 					bg_r, bg_g, bg_b = args.background.split(",")
@@ -329,59 +332,38 @@ class PNG:
 		else:
 			upleft = self.pixel_map[px.y - 1][px.x - 1]
 
-		pr = left.red + up.red - upleft.red
-		pr_left = abs(pr - left.red)
-		pr_up = abs(pr - up.red)
-		pr_upleft = abs(pr - upleft.red)
-		if pr_left <= pr_up and pr_left <= pr_upleft:
-			px.red = (px.red + left.red) % 256
-		elif pr_up <= pr_upleft:
-			px.red = (px.red + up.red) % 256
-		else:
-			px.red = (px.red + upleft.red) % 256
+		px.raw = b""
+		for channel in ("red", "green", "blue"):
+			l = getattr(left, channel)
+			u = getattr(up, channel)
+			ul = getattr(upleft, channel)
+			pxvalue = getattr(px, channel)
+			p = l + u - ul
+			pl = abs(p - l)
+			pu = abs(p - u)
+			pul = abs(p - ul)
+			if pl <= pu and pl <= pul:
+				setattr(px, channel, (pxvalue + l) % 256)
+			elif pu <= pul:
+				setattr(px, channel, (pxvalue + u) % 256)
+			else:
+				setattr(px, channel, (pxvalue + ul) % 256)
+			px.raw += bytes([getattr(px, channel)])
 
-		pg = left.green + up.green - upleft.green
-		pg_left = abs(pg - left.green)
-		pg_up = abs(pg - up.green)
-		pg_upleft = abs(pg - upleft.green)
+		if self.colortype in ("RGBa", "grayscale_alpha"):
+			pa = left.alpha + up.alpha - upleft.alpha
+			pa_left = abs(pa - left.alpha)
+			pa_up = abs(pa - up.alpha)
+			pa_upleft = abs(pa - upleft.alpha)
 
-		if pg_left <= pg_up and pg_left <= pg_upleft:
-			px.green = (px.green + left.green) % 256
-		elif pg_up <= pg_upleft:
-			px.green = (px.green + up.green) % 256
-		else:
-			px.green = (px.green + upleft.green) % 256
+			if pa_left <= pa_up and pa_left <= pa_upleft:
+				px.alpha = (px.alpha + left.alpha) % 256
+			elif pa_up <= pa_upleft:
+				px.alpha = (px.alpha + up.alpha) % 256
+			else:
+				px.alpha = (px.alpha + upleft.alpha) % 256
 
-		pb = left.blue + up.blue - upleft.blue
-		pb_left = abs(pb - left.blue)
-		pb_up = abs(pb - up.blue)
-		pb_upleft = abs(pb - upleft.blue)
-
-		if pb_left <= pb_up and pb_left <= pb_upleft:
-			px.blue = (px.blue + left.blue) % 256
-		elif pb_up <= pb_upleft:
-			px.blue = (px.blue + up.blue) % 256
-		else:
-			px.blue = (px.blue + upleft.blue) % 256
-		
-		px.raw = bytes([px.red, px.green, px.blue]) 
-
-		if self.bytes_per_pixel <= 3:
-			px.unfiltered = True
-			return px
-
-		pa = left.alpha + up.alpha - upleft.alpha
-		pa_left = abs(pa - left.alpha)
-		pa_up = abs(pa - up.alpha)
-		pa_upleft = abs(pa - upleft.alpha)
-
-		if pa_left <= pa_up and pa_left <= pa_upleft:
-			px.alpha = (px.alpha + left.alpha) % 256
-		elif pa_up <= pa_upleft:
-			px.alpha = (px.alpha + up.alpha) % 256
-		else:
-			px.alpha = (px.alpha + upleft.alpha) % 256
-		px.raw += bytes([px.alpha])
+			px.raw += bytes([px.alpha])
 
 		px.unfiltered = True
 		return px
@@ -397,24 +379,19 @@ class PNG:
 		else:
 			up = self.pixel_map[px.y - 1][px.x]
 
-		px.red += avg(left.red, up.red)
-		px.red = px.red % 256
+		px.raw = b""
+		for channel in ("red", "green", "blue"):
+			pxvalue = getattr(px, channel)
+			leftvalue = getattr(left, channel)
+			upvalue = getattr(up, channel)
+			setattr(px, channel, (pxvalue + avg(leftvalue, upvalue)) % 256)
+			px.raw += bytes([getattr(px, channel)])
 
-		px.green += avg(left.green, up.green)
-		px.green = px.green % 256
+		if self.colortype in ("RGBa", "grayscale_alpha"):
+			px.alpha += avg(left.alpha, up.alpha)
+			px.alpha = px.alpha % 256
+			px.raw += bytes([px.alpha])
 
-		px.blue += avg(left.blue, up.blue)
-		px.blue = px.blue % 256
-
-		px.raw = bytes([px.red, px.green, px.blue]) 
-
-		if self.bytes_per_pixel <= 3:
-			px.unfiltered = True
-			return px
-
-		px.alpha += avg(left.alpha, up.alpha)
-		px.alpha = px.alpha % 256
-		px.raw += bytes([px.alpha])
 		px.unfiltered = True
 		return px
 
@@ -423,24 +400,19 @@ class PNG:
 			left = Pixel(0, b"\x00"*self.bytes_per_pixel, 0, px.y)
 		else:
 			left = self.pixel_map[px.y][px.x - 1]
-		px.red += left.red
-		px.red = px.red % 256
 
-		px.green += left.green
-		px.green = px.green % 256
+		px.raw = b""
+		for channel in ("red", "green", "blue"):
+			pxvalue = getattr(px, channel)
+			leftvalue = getattr(left, channel)
+			setattr(px, channel, (pxvalue + leftvalue) % 256)
+			px.raw += bytes([getattr(px, channel)])
 
-		px.blue += left.blue
-		px.blue = px.blue % 256
+		if self.colortype in ("RGBa", "grayscale_alpha"):
+			px.alpha += left.alpha
+			px.alpha = px.alpha % 256
+			px.raw += bytes([px.alpha])
 
-		px.raw = bytes([px.red, px.green, px.blue]) 
-
-		if self.bytes_per_pixel <= 3:
-			px.unfiltered = True
-			return px
-
-		px.alpha += left.alpha
-		px.alpha = px.alpha % 256
-		px.raw += bytes([px.alpha])
 		px.unfiltered = True
 		return px
 	
@@ -449,23 +421,19 @@ class PNG:
 			up = Pixel(0, b"\x00"*self.bytes_per_pixel, px.x, 0)
 		else:
 			up = self.pixel_map[px.y - 1][px.x]
-		px.red += up.red
-		px.red = px.red % 256
 
-		px.green += up.green
-		px.green = px.green % 256
+		px.raw = b""
+		for channel in ("red", "green", "blue"):
+			pxvalue = getattr(px, channel)
+			upvalue = getattr(up, channel)
+			setattr(px, channel, (pxvalue + upvalue) % 256)
+			px.raw += bytes([getattr(px, channel)])
 
-		px.blue += up.blue
-		px.blue = px.blue % 256
+		if self.colortype in ("RGBa", "grayscale_alpha"):
+			px.alpha += up.alpha
+			px.alpha = px.alpha % 256
+			px.raw += bytes([px.alpha])
 
-		px.raw = bytes([px.red, px.green, px.blue]) 
-		if self.bytes_per_pixel <= 3:
-			px.unfiltered = True
-			return px
-
-		px.alpha += up.alpha
-		px.alpha = px.alpha % 256
-		px.raw += bytes([px.alpha])
 		px.unfiltered = True
 		return px
 
