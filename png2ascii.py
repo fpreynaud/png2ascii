@@ -13,17 +13,33 @@ import zlib
 HB = "▀"
 
 class Chunk:
-	def __init__(self, stream: bytes):
-		self.length = stream.read(4)
-		self.length = sum(int(b) * 256**(3 - i) for i, b in enumerate(self.length))
-		self.type = stream.read(4)
-		self.data = stream.read(self.length)
-		self.crc = stream.read(4)
+	def __init__(self, stream = None, _bytes=None):
+		if stream is not None:
+			self.length = b2i(stream.read(4))
+			self.type = stream.read(4)
+			self.data = stream.read(self.length)
+			self.crc = stream.read(4)
+		else:
+			self.length = b2i(_bytes[:4])
+			self.type = _bytes[4:8]
+			self.data = _bytes[8:8+self.length]
+			self.crc = _bytes[8+self.length:8+self.length+4]
 	
+	@classmethod
+	def build(cls, length, _type, data):
+		return cls(stream=None, _bytes=b"\x00"*(4-len(i2b(length))) + i2b(length) + _type + data + i2b(zlib.crc32(_type + data)))
+		
 	def __repr__(self):
 		if self.type != b"IDAT":
 			return f"{self.type}({self.length}): {self.data[:32]}"
 		return f"{self.type}({self.length})"
+	
+	@property
+	def raw(self):
+		return i2b(self.length, 4) + self.type + self.data + self.crc
+		
+	def checksum(self):
+		return zlib.crc32(self.type + self.data)
 
 class PNG:
 	def __init__(self, path: str):
@@ -32,6 +48,7 @@ class PNG:
 		self._idat = []
 		self._plte = None
 		self.chunks = []
+		self.path = path
 		self.pixel_map = []
 		self.original_pixel_map = []
 
@@ -54,8 +71,8 @@ class PNG:
 
 		self.compressed_size = sum(data.length for data in self._idat)
 		IHDR = namedtuple("IHDR", ["width", "height", "depth", "colortype", "compression_method", "filter_method", "interlacing_method"])
-		self.ihdr = IHDR(width=sum(int(b)*256**(3-i) for i,b in enumerate(self._ihdr.data[:4])), 
-						 height=sum(int(b)*256**(3-i) for i,b in enumerate(self._ihdr.data[4:8])), 
+		self.ihdr = IHDR(width=b2i(self._ihdr.data[:4]), 
+						 height=b2i(self._ihdr.data[4:8]), 
 						 depth=int(self._ihdr.data[8]),
 						 colortype=int(self._ihdr.data[9]),
 						 compression_method=int(self._ihdr.data[10]),
@@ -88,7 +105,7 @@ class PNG:
 		self.bytes_per_pixel = self.channel_count[self.colortype]
 
 	def __repr__(self):
-		return f"PNG {self.width}x{self.height} depth: {self.depth} colortype: {self.colortype} filter method: {self.filter_method} - data size: {fmt_num(self.compressed_size, chr(0x27))} bytes"
+		return f"PNG {self.width}x{self.height} depth: {self.depth} colortype: {self.colortype}"
 
 	def display(self, orig_y=0, orig_x=0, max_height=None, max_width=None):
 		w, h = shutil.get_terminal_size()
@@ -273,7 +290,56 @@ class PNG:
 			self.bilinear(height, width)
 		elif method == "bicubic":
 			self.bicubic(height, width)
+	
+	def export(self, target=None, fmt="png"):
+		print("Exporting", file=sys.stderr)
+		height, width = len(self.pixel_map), len(self.pixel_map[0])
+		if not target:
+			base, ext = os.path.splitext(self.path)
+			target = base + f"_{width}x{height}.{fmt}"
 
+		if fmt.lower() == "txt":
+			with open(target, "w") as f:
+				for y in range(0, len(self.pixel_map), 2):
+					for x in range(0, len(self.pixel_map[y])):
+						px = self.pixel_map[y][x]
+						r, g, b = px.rgb
+						if y == len(self.pixel_map) - 1:
+							f.write(f"\x1b[m\x1b[38;2;{r};{g};{b}m{HB}\x1b[m")
+						else:
+							r2, g2, b2 = self.pixel_map[y+1][x].rgb
+							f.write(f"\x1b[38;2;{r};{g};{b}m\x1b[48;2;{r2};{g2};{b2}m{HB}\x1b[m")
+					f.write("\n")
+		elif fmt.lower() == "png":
+
+			# Build IHDR chunk
+			w, h = i2b(width), i2b(height)
+			w = b"\x00"*(4 - len(w)) + w
+			h = b"\x00"*(4 - len(h)) + h
+			hdr_data = w + h + self._ihdr.data[8:]
+			ihdr = Chunk.build(len(hdr_data), b"IHDR", hdr_data)
+
+			# Build IDAT chunks
+			raw = b""
+			for y in range(height):
+				raw += b"\x00" # Set filter_type to 0 (none)
+				for x in range(width):
+					raw += self.pixel_map[y][x].raw
+			raw = zlib.compress(raw)
+
+			data_chunks = []
+			for i in range(0, len(raw), 65535):
+				stream = raw[i:i+65535]
+				chunk = Chunk.build(len(stream), b"IDAT", stream)
+				data_chunks.append(chunk)
+
+			# Build IEND chunk
+			iend = Chunk.build(0, b"IEND", b"")
+			
+			with open(target, "wb") as f:
+				f.write(self._signature)
+				f.write(ihdr.raw + b"".join(c.raw for c in data_chunks) + iend.raw)
+			print(f"Image exported to {target}", file=sys.stderr)
 	
 	def uncompress_data(self):
 		pixels = b""
@@ -444,10 +510,17 @@ class Pixel:
 		self.raw = data
 		self.x = x
 		self.y = y
-		self.red = b2i(self.raw[0])
-		self.green = b2i(self.raw[1])
-		self.blue = b2i(self.raw[2])
+		self.red = 0
+		self.green = 0
+		self.blue = 0
 		self.alpha = b2i(b"\xff")
+		self.gray = 0
+		if len(self.raw) == 1:
+			self.red = self.green = self.blue = b2i(self.raw[0])
+		elif len(self.raw) <= 4:
+			self.red = b2i(self.raw[0])
+			self.green = b2i(self.raw[1])
+			self.blue = b2i(self.raw[2])
 		if len(self.raw) == 4:
 			self.alpha = b2i(self.raw[3])
 		self.unfiltered = not bool(filter_type)
@@ -490,6 +563,22 @@ def b2i(seq: bytes):
 		return seq
 	return sum(int(b) * 256**(len(seq) - 1 - i) for i, b in enumerate(seq))
 
+def i2b(n: int, padlen=0, padchar=b"\x00"):
+	"""
+	Convert an integer into a bytes sequence
+	"""
+	if type(n) == bytes:
+		return n
+	
+	q, r = divmod(n, 256)
+	ret = bytes([r])
+	while q > 255:
+		q, r = divmod(q, 256)
+		ret = bytes([r]) + ret
+	if q > 0:
+		ret = bytes([q]) + ret
+	return padchar*(padlen -len(ret)) + ret
+
 def fmt_num(n, thousand_sep=" ", decimal_sep="."):
 	s = str(n)
 	if "." in s:
@@ -512,6 +601,8 @@ parser.add_argument("-r", "--resize-mode", choices=["bilinear", "nearest", "bicu
 parser.add_argument("-w", "--max-width", help="Resize to this width", type=int)
 parser.add_argument("-H", "--max-height", help="Resize to this height", type=int)
 parser.add_argument("-k", "--keep-ratio", help="Keep width/height ration when resizing ignored if both --max-width and --max-height are given", action="store_true")
+parser.add_argument("-f", "--format", help="Export format ('txt' or 'png')", choices=["txt", "png"], default='txt')
+parser.add_argument("-o", "--output", help="Export result to a file")
 parser.add_argument("path", help="Path to the image")
 args = parser.parse_args()
 
@@ -535,9 +626,9 @@ if args.info:
 	exit(0)
 
 w, h = shutil.get_terminal_size()
-print("Parsing image data", file=sys.stderr)
+print("Parsing image...", file=sys.stderr)
 image.parse_raw(args.max_height, args.max_width, args.origy, args.origx)
-print("Unfiltering", file=sys.stderr)
+#print("Unfiltering", file=sys.stderr)
 image.unfilter()
 image.original_pixel_map = deepcopy(image.pixel_map)
 
@@ -557,9 +648,10 @@ elif not args.max_height and args.max_width:
 		height = max(1, int(args.max_width // ratio))
 print("Resizing", file=sys.stderr)
 image.resize(height, width, args.resize_mode)
-print("Displaying", file=sys.stderr)
+#print("Displaying", file=sys.stderr)
 image.display()
-print(path)
+if args.output:
+	image.export(target=args.output, fmt=args.format)
 
 if os.path.isfile(tmp_img):
 	os.remove("/tmp/.img.png")
