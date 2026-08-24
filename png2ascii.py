@@ -213,25 +213,37 @@ class PNG:
 					R_red = 0
 					R_green = 0
 					R_blue = 0
+					R_alpha = 0
 					for i in range(-1, 3):
 						xi, yi = line[i+1]
 						R_red += cubic_weight(i - dx)*self.original_pixel_map[yi][xi].red
 						R_green += cubic_weight(i - dx)*self.original_pixel_map[yi][xi].green
 						R_blue += cubic_weight(i - dx)*self.original_pixel_map[yi][xi].blue
-					Rs.append((R_red, R_green, R_blue))
+						R_alpha += cubic_weight(i - dx)*self.original_pixel_map[yi][xi].alpha
+					if self.bytes_per_pixel == 3:
+						Rs.append((R_red, R_green, R_blue))
+					elif self.bytes_per_pixel == 4:
+						Rs.append((R_red, R_green, R_blue, R_alpha))
+
 
 				# Vertical pass
 				r = 0
 				g = 0
 				b = 0
+				a = 0
 				for i in range(-1, 3):
 					r += cubic_weight(i - dy)*Rs[i+1][0]
 					g += cubic_weight(i - dy)*Rs[i+1][1]
 					b += cubic_weight(i - dy)*Rs[i+1][2]
+					if len(Rs) == 4:
+						a += cubic_weight(i - dy)*Rs[i+1][3]
 				r = max(0, min(int(r), 255))
 				g = max(0, min(int(g), 255))
 				b = max(0, min(int(b), 255))
+				a = max(0, min(int(a), 255))
 				px = Pixel(0, bytes([r, g, b]), x, y)
+				if len(Rs) == 4:
+					px.raw += i2b(a)
 				px.unfiltered = True
 				row.append(px)
 			pixel_map.append(row)
@@ -265,8 +277,12 @@ class PNG:
 				r = int(weight_ul*ul.red + weight_ur*ur.red + weight_bl*bl.red + weight_br*br.red)
 				g = int(weight_ul*ul.green + weight_ur*ur.green + weight_bl*bl.green + weight_br*br.green)
 				b = int(weight_ul*ul.blue + weight_ur*ur.blue + weight_bl*bl.blue + weight_br*br.blue)
+				if self.bytes_per_pixel == 4:
+					a = int(weight_ul*ul.alpha + weight_ur*ur.alpha + weight_bl*bl.alpha + weight_br*br.alpha)
 
 				px_dst = Pixel(0, bytes([r, g, b]), x, y)
+				if self.bytes_per_pixel == 4:
+					px_dst.raw += i2b(a)
 				px_dst.unfiltered = True
 				row.append(px_dst)
 			pixel_map.append(row)
@@ -311,7 +327,7 @@ class PNG:
 	def export(self, target=None, fmt="png"):
 		print("Exporting", file=sys.stderr)
 		height, width = len(self.pixel_map), len(self.pixel_map[0])
-		if not target:
+		if not target or target == "auto":
 			base, ext = os.path.splitext(self.path)
 			target = base + f"_{width}x{height}.{fmt}"
 
