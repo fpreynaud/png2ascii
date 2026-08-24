@@ -11,6 +11,7 @@ import sys
 import zlib
 
 HB = "▀"
+PNG_signature = b"\x89PNG\x0d\x0a\x1a\x0a"
 
 class Chunk:
 	def __init__(self, stream = None, _bytes=None):
@@ -54,7 +55,7 @@ class PNG:
 
 		with open(path, "rb") as image: 
 			signature = image.read(8)
-			if signature != b"\x89PNG\x0d\x0a\x1a\x0a":
+			if signature != PNG_signature:
 				raise ValueError("Not a PNG file")
 			self._signature = signature
 			chunk = Chunk(image)
@@ -135,7 +136,7 @@ class PNG:
 		end = start + self.width*self.bytes_per_pixel + 1
 		return self.raw[start:end]
 		
-	def parse_rawline(self, y: int, raw_line: bytes, width: int, origy=0, origx=0):
+	def parse_rawline(self, y: int, raw_line: bytes, width: int):
 		scanline = []
 		filter_type = raw_line[0]
 		x = 0
@@ -145,7 +146,7 @@ class PNG:
 			x += 1
 		return scanline
 		
-	def parse_raw(self, height=None, width=None, origy=0, origx=0):
+	def parse_raw(self, height=None, width=None):
 		scanlines = []
 		if not height:
 			height = self.height
@@ -153,7 +154,7 @@ class PNG:
 			width = self.width
 		for y in range(self.height):
 			raw_line = self.get_line(y + 1)
-			scanline = self.parse_rawline(y, raw_line, width, origy, origx)
+			scanline = self.parse_rawline(y, raw_line, width)
 			scanlines.append(scanline)
 		self.original_pixel_map = [*scanlines]
 		self.pixel_map = deepcopy(self.original_pixel_map)
@@ -165,7 +166,7 @@ class PNG:
 			y_src = int(y * self.height / height)
 			for x in range(width):
 				x_src = int(x * self.width / width)
-				px_src = self.pixel_map[y_src][x_src]
+				px_src = self.original_pixel_map[y_src][x_src]
 				px_dst = px_src.copy()
 				px_dst.x = x
 				px_dst.y = y
@@ -291,6 +292,22 @@ class PNG:
 		elif method == "bicubic":
 			self.bicubic(height, width)
 	
+	def _build_header(self, width, height):
+		width = i2b(width, 4)
+		height = i2b(height, 4)
+		depth = b"\x08"
+		colortype = b"\x02"
+		compression_method = b"\x00"
+		filter_method = b"\x00"
+		interlacing_method = b"\x00"
+		# depth=8, colortype=2(rgb), (compression|filter|interlacing)_method=0
+		return b"".join((width, height, b"\x08\x02\x00\x00\x00"))
+			
+	def idat_gen(self, raw):
+		for i in range(0, len(raw), 65535):
+			stream = raw[i:i+65535]
+			yield Chunk.build(len(stream), b"IDAT", stream)
+
 	def export(self, target=None, fmt="png"):
 		print("Exporting", file=sys.stderr)
 		height, width = len(self.pixel_map), len(self.pixel_map[0])
@@ -311,7 +328,6 @@ class PNG:
 							f.write(f"\x1b[38;2;{r};{g};{b}m\x1b[48;2;{r2};{g2};{b2}m{HB}\x1b[m")
 					f.write("\n")
 		elif fmt.lower() == "png":
-
 			# Build IHDR chunk
 			w, h = i2b(width), i2b(height)
 			w = b"\x00"*(4 - len(w)) + w
@@ -327,11 +343,7 @@ class PNG:
 					raw += self.pixel_map[y][x].raw
 			raw = zlib.compress(raw)
 
-			data_chunks = []
-			for i in range(0, len(raw), 65535):
-				stream = raw[i:i+65535]
-				chunk = Chunk.build(len(stream), b"IDAT", stream)
-				data_chunks.append(chunk)
+			data_chunks = [c for c in self.idat_gen(raw)]
 
 			# Build IEND chunk
 			iend = Chunk.build(0, b"IEND", b"")
@@ -347,34 +359,27 @@ class PNG:
 			pixels += chunk.data
 		return zlib.decompress(pixels)
 	
-	def unfilter(self):
+	def unfilter(self, ignore_alpha=True):
 		for y in range(min(self.height, len(self.pixel_map))):
 			for x in range(min(self.width, len(self.pixel_map[y]))):
 				px = self.pixel_map[y][x]
-				if px.unfiltered:
-					called = ""
-					pass
+				if px.unfiltered or px.filter_type == 0:
+					continue
 				elif px.filter_type == 1:
 					self.pixel_map[y][x] = self.un_sub(px)
-					called = "un_sub"
 				elif px.filter_type == 2:
 					self.pixel_map[y][x] = self.un_up(px)
-					called = "un_up"
 				elif px.filter_type == 3:
 					self.pixel_map[y][x] = self.un_avg(px)
-					called = "un_avg"
-				else:
+				elif px.filter_type == 4:
 					self.pixel_map[y][x] = self.un_paeth(px)
-					called = "un_paeth"
-
-				#if self.pixel_map[y][x].alpha != 255 and self.pixel_map[y][x].alpha != 0:
-					#print(y, x, self.pixel_map[y][x].rgba, called)
+				else:
+					raise ValueError(f"Invalid filter type {px.filter_type}")
 
 		for y in range(min(self.height, len(self.pixel_map))):
 			for x in range(min(self.width, len(self.pixel_map[y]))):
 				px = self.pixel_map[y][x]
-				if not args.ignore_alpha:
-					#print(px.rgba)
+				if not ignore_alpha:
 					bg_r, bg_g, bg_b = args.background.split(",")
 					bg_r = int(bg_r)
 					bg_g = int(bg_g)
@@ -382,7 +387,6 @@ class PNG:
 					px.red   = int((1 - px.alpha/255) * bg_r + (px.alpha/255) * px.red)
 					px.green = int((1 - px.alpha/255) * bg_g + (px.alpha/255) * px.green)
 					px.blue  = int((1 - px.alpha/255) * bg_b + (px.alpha/255) * px.blue)
-					#print(px.rgba)
 					
 	def un_paeth(self, px):
 		if px.x == 0:
@@ -503,6 +507,67 @@ class PNG:
 		px.unfiltered = True
 		return px
 
+class PNGEncoder(PNG):
+	def __init__(self, data: bytes, width: int = 1):
+		# Get the total pixels needed
+		q, r = divmod(len(data), 3)
+		pixels_number = q + (r > 0)
+
+		# Make sure width is strictly positive
+		self.width = max(abs(width), 1)
+		self.width = min(self.width, pixels_number)
+
+		# Deduce height
+		q, r = divmod(pixels_number, self.width)
+		self.height = q + (r > 0)
+		print(f"Encoding {len(data)} bytes into a {self.width}x{self.height} PNG")
+
+		self.data = data
+	
+	def inject_filter_type(self):
+		raw = b""
+		for y in range(self.height):
+			raw += b"\x00" + self.data[y*self.width*3:(y + 1)*3*self.width]
+
+		# zero-pad missing pixels
+		raw += b"\x00"*(self.width * self.height * 3 + self.height - len(raw))
+		return raw
+	
+	def remove_filter_type(self, png):
+		data = b""
+		for y in range(png.height):
+			line = png.get_line(y + 1)
+			data += line[1:]
+		return data
+
+	def decode(self, target="/tmp/image.png"):
+		png = PNG(target)
+		png.parse_raw()
+		png.unfilter()
+		data = b""
+		for y in range(png.height):
+			for x in range(png.width):
+				data += png.pixel_map[y][x].raw
+		return data.rstrip(b"\x00")
+
+	def encode(self, target="/tmp/image.png"):
+		png = PNG_signature
+		# Build IHDR chunk
+		ihdr_data = self._build_header(self.width, self.height)
+		png += Chunk.build(len(ihdr_data), b"IHDR", ihdr_data).raw
+		
+		# Prepare raw data
+		raw = self.inject_filter_type()
+		raw = zlib.compress(raw)
+
+		# Build IDAT chunks
+		png += b"".join([c.raw for c in self.idat_gen(raw)])
+
+		png += Chunk.build(0, b"IEND", b"").raw
+
+		with open(target, "wb") as f:
+			f.write(png)
+		print(f"Image encoded to {target}", file=sys.stderr)
 
 class Pixel:
 	def __init__(self, filter_type, data, x, y):
@@ -591,67 +656,66 @@ def fmt_num(n, thousand_sep=" ", decimal_sep="."):
 		l.insert(0, int_part[max(0, i-3):i])
 	return thousand_sep.join(l) + dec_part
 
-parser = argparse.ArgumentParser()
-parser.add_argument("-x", "--origx", help="Origin abcissa", default=0, type=int)
-parser.add_argument("-y", "--origy", help="Origin ordinate", default=0, type=int)
-parser.add_argument("-bg", "--background", help="RGB colors of background, written as R,G,B", default="0,0,0")
-parser.add_argument("-ia", "--ignore-alpha", help="Do not update rgb values according to alpha channel after unfiltering", action="store_true")
-parser.add_argument("-i", "--info", help="Display information about image", action="store_true")
-parser.add_argument("-r", "--resize-mode", choices=["bilinear", "nearest", "bicubic"], default="nearest")
-parser.add_argument("-w", "--max-width", help="Resize to this width", type=int)
-parser.add_argument("-H", "--max-height", help="Resize to this height", type=int)
-parser.add_argument("-k", "--keep-ratio", help="Keep width/height ration when resizing ignored if both --max-width and --max-height are given", action="store_true")
-parser.add_argument("-f", "--format", help="Export format ('txt' or 'png')", choices=["txt", "png"], default='txt')
-parser.add_argument("-o", "--output", help="Export result to a file")
-parser.add_argument("path", help="Path to the image")
-args = parser.parse_args()
+if __name__ == "__main__":
+	parser = argparse.ArgumentParser()
+	parser.add_argument("-bg", "--background", help="RGB colors of background, written as R,G,B", default="0,0,0")
+	parser.add_argument("-ia", "--ignore-alpha", help="Do not update rgb values according to alpha channel after unfiltering", action="store_true")
+	parser.add_argument("-i", "--info", help="Display information about image", action="store_true")
+	parser.add_argument("-r", "--resize-mode", choices=["bilinear", "nearest", "bicubic"], default="nearest")
+	parser.add_argument("-w", "--max-width", help="Resize to this width", type=int)
+	parser.add_argument("-H", "--max-height", help="Resize to this height", type=int)
+	parser.add_argument("-k", "--keep-ratio", help="Keep width/height ration when resizing ignored if both --max-width and --max-height are given", action="store_true")
+	parser.add_argument("-f", "--format", help="Export format ('txt' or 'png')", choices=["txt", "png"], default='txt')
+	parser.add_argument("-o", "--output", help="Export result to a file")
+	parser.add_argument("path", help="Path to the image")
+	args = parser.parse_args()
 
-path = args.path
+	path = args.path
 
-if not os.path.isfile(path) and path != "-":
-	exit(1)
-	
-tmp_img = "/tmp/.img.png"
-if path == "-":
-	print("Reading image from standard input", file=sys.stderr)
-	raw_image = sys.stdin.buffer.read()
-	with open(tmp_img, "wb") as f:
-		f.write(raw_image)
-	path = tmp_img
+	if not os.path.isfile(path) and path != "-":
+		exit(1)
+		
+	tmp_img = "/tmp/.img.png"
+	if path == "-":
+		print("Reading image from standard input", file=sys.stderr)
+		raw_image = sys.stdin.buffer.read()
+		with open(tmp_img, "wb") as f:
+			f.write(raw_image)
+		path = tmp_img
 
-image = PNG(path)
+	image = PNG(path)
 
-if args.info:
-	print(image)
-	exit(0)
+	if args.info:
+		print(image)
+		exit(0)
 
-w, h = shutil.get_terminal_size()
-print("Parsing image...", file=sys.stderr)
-image.parse_raw(args.max_height, args.max_width, args.origy, args.origx)
-#print("Unfiltering", file=sys.stderr)
-image.unfilter()
-image.original_pixel_map = deepcopy(image.pixel_map)
+	w, h = shutil.get_terminal_size()
+	print("Parsing image...", file=sys.stderr)
+	image.parse_raw(args.max_height, args.max_width)
+	#print("Unfiltering", file=sys.stderr)
+	image.unfilter(args.ignore_alpha)
+	image.original_pixel_map = deepcopy(image.pixel_map)
 
-ratio = image.width / image.height
+	ratio = image.width / image.height
 
-width, height = image.width, image.height
-if args.max_height and args.max_width:
-	width, height = args.max_width, args.max_height
-elif args.max_height and not args.max_width:
-	height = args.max_height
-	if args.keep_ratio:
-		width = max(1, int(ratio * args.max_height))
-		width = min(w, width)
-elif not args.max_height and args.max_width:
-	width = args.max_width
-	if args.keep_ratio:
-		height = max(1, int(args.max_width // ratio))
-print("Resizing", file=sys.stderr)
-image.resize(height, width, args.resize_mode)
-#print("Displaying", file=sys.stderr)
-image.display()
-if args.output:
-	image.export(target=args.output, fmt=args.format)
+	width, height = image.width, image.height
+	if args.max_height and args.max_width:
+		width, height = args.max_width, args.max_height
+	elif args.max_height and not args.max_width:
+		height = args.max_height
+		if args.keep_ratio:
+			width = max(1, int(ratio * args.max_height))
+			width = min(w, width)
+	elif not args.max_height and args.max_width:
+		width = args.max_width
+		if args.keep_ratio:
+			height = max(1, int(args.max_width // ratio))
+	print("Resizing", file=sys.stderr)
+	image.resize(height, width, args.resize_mode)
+	#print("Displaying", file=sys.stderr)
+	image.display()
+	if args.output:
+		image.export(target=args.output, fmt=args.format)
 
-if os.path.isfile(tmp_img):
-	os.remove("/tmp/.img.png")
+	if os.path.isfile(tmp_img):
+		os.remove("/tmp/.img.png")
